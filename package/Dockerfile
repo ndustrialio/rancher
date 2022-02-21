@@ -1,9 +1,23 @@
+ARG K3S_BUILDER=rancher/k3s:v1.22.5-k3s1
+
+# Use binaries from k3s root for s390x as k3s is not available on s390x
+FROM registry.suse.com/suse/sle15:15.3 AS k3s_root
+ARG ARCH
+ENV ARCH=${ARCH}
+ENV K3S_ROOT_VERSION v0.11.0
+ONBUILD RUN zypper -n in tar
+ONBUILD ADD https://github.com/rancher/k3s-root/releases/download/${K3S_ROOT_VERSION}/k3s-root-${ARCH}.tar /k3s-root.tar
+ONBUILD RUN tar xvf /k3s-root.tar; \
+  touch /bin/cni /bin/containerd /bin/containerd-shim-runc-v2 /bin/runc
+
+FROM ${K3S_BUILDER} as k3s_builder
+
 FROM registry.suse.com/suse/sle15:15.3
 
-RUN zypper -n install git-core curl ca-certificates unzip xz gzip sed tar shadow gawk vim && \
+RUN zypper -n install git-core curl ca-certificates unzip xz gzip sed tar shadow gawk vim netcat-openbsd && \
     zypper -n clean -a && rm -rf /tmp/* /var/tmp/* /usr/share/doc/packages/* && \
     useradd rancher && \
-    mkdir -p /var/lib/rancher/etcd /var/lib/cattle /opt/jail /opt/drivers/management-state/bin && \
+    mkdir -p /var/lib/rancher /var/lib/cattle /opt/jail /opt/drivers/management-state/bin && \
     chown -R rancher /var/lib/rancher /var/lib/cattle /usr/local/bin
 
 RUN mkdir /root/.kube && \
@@ -15,36 +29,39 @@ WORKDIR /var/lib/rancher
 
 ARG ARCH=amd64
 ARG IMAGE_REPO=rancher
-ARG SYSTEM_CHART_DEFAULT_BRANCH=release-v2.6
-ARG CHART_DEFAULT_BRANCH=release-v2.6
+ARG SYSTEM_CHART_DEFAULT_BRANCH=dev-v2.6
+ARG CHART_DEFAULT_BRANCH=dev-v2.6
 ARG PARTNER_CHART_DEFAULT_BRANCH=main
 ARG RKE2_CHART_DEFAULT_BRANCH=main
 # kontainer-driver-metadata branch to be set for specific branch other than dev/master, logic at rancher/rancher/pkg/settings/setting.go
-ARG CATTLE_KDM_BRANCH=release-v2.6
+ARG CATTLE_KDM_BRANCH=dev-v2.6
 
 ENV CATTLE_SYSTEM_CHART_DEFAULT_BRANCH=$SYSTEM_CHART_DEFAULT_BRANCH
 ENV CATTLE_CHART_DEFAULT_BRANCH=$CHART_DEFAULT_BRANCH
 ENV CATTLE_PARTNER_CHART_DEFAULT_BRANCH=$PARTNER_CHART_DEFAULT_BRANCH
 ENV CATTLE_RKE2_CHART_DEFAULT_BRANCH=$RKE2_CHART_DEFAULT_BRANCH
 ENV CATTLE_HELM_VERSION v2.16.8-rancher1
-ENV CATTLE_K3S_VERSION v1.21.3+k3s1
-ENV CATTLE_MACHINE_VERSION v0.15.0-rancher70
+ENV CATTLE_K3S_VERSION v1.22.5+k3s1
+ENV CATTLE_MACHINE_VERSION v0.15.0-rancher76
 ENV CATTLE_MACHINE_PROVISION_IMAGE rancher/machine:${CATTLE_MACHINE_VERSION}
-ENV CATTLE_ETCD_VERSION v3.4.15
-ENV LOGLEVEL_VERSION v0.1.3
+ENV CATTLE_ETCD_VERSION v3.5.1
+ENV LOGLEVEL_VERSION v0.1.5
 ENV TINI_VERSION v0.18.0
-ENV TELEMETRY_VERSION v0.5.16
+ENV TELEMETRY_VERSION v0.5.17
 ENV DOCKER_MACHINE_LINODE_VERSION v0.1.8
 ENV LINODE_UI_DRIVER_VERSION v0.3.0
+# make sure the version number is consistent with the one at Line 100 of pkg/data/management/machinedriver_data.go
+ENV DOCKER_MACHINE_HARVESTER_VERSION v0.3.4
 ENV CATTLE_KDM_BRANCH ${CATTLE_KDM_BRANCH}
-ENV HELM_VERSION v3.6.0
-ENV KUSTOMIZE_VERSION v3.10.0
-ENV CATTLE_SYSTEM_AGENT_VERSION v0.1.0
+ENV HELM_VERSION v3.7.1
+ENV KUSTOMIZE_VERSION v4.4.1
+ENV CATTLE_SYSTEM_AGENT_VERSION v0.2.0-beta4
 ENV CATTLE_SYSTEM_AGENT_UPGRADE_IMAGE rancher/system-agent:${CATTLE_SYSTEM_AGENT_VERSION}-suc
+ENV CATTLE_SYSTEM_UPGRADE_CONTROLLER_CHART_VERSION 100.0.1+up0.3.1
 
 # System charts minimal version
-ENV CATTLE_FLEET_MIN_VERSION=100.0.1+up0.3.7
-ENV CATTLE_RANCHER_WEBHOOK_MIN_VERSION=1.0.1+up0.2.1
+ENV CATTLE_FLEET_MIN_VERSION=100.0.3+up0.3.9-rc1
+ENV CATTLE_RANCHER_WEBHOOK_MIN_VERSION=1.0.3+up0.2.4-rc6
 
 RUN mkdir -p /var/lib/rancher-data/local-catalogs/system-library && \
     mkdir -p /var/lib/rancher-data/local-catalogs/library && \
@@ -62,10 +79,18 @@ RUN curl -sLf https://github.com/rancher/machine/releases/download/${CATTLE_MACH
     curl -sLf https://github.com/rancher/loglevel/releases/download/${LOGLEVEL_VERSION}/loglevel-${ARCH}-${LOGLEVEL_VERSION}.tar.gz | tar xvzf - -C /usr/bin && \
     curl -LO https://github.com/linode/docker-machine-driver-linode/releases/download/${DOCKER_MACHINE_LINODE_VERSION}/docker-machine-driver-linode_linux-amd64.zip && \
     unzip docker-machine-driver-linode_linux-amd64.zip -d /opt/drivers/management-state/bin && \
+    mkdir -p /usr/share/rancher/ui/assets/ && \
+    cp /opt/drivers/management-state/bin/docker-machine-driver-linode /usr/share/rancher/ui/assets/ && \
     rm docker-machine-driver-linode_linux-amd64.zip
+
+RUN curl -LO https://releases.rancher.com/harvester-node-driver/${DOCKER_MACHINE_HARVESTER_VERSION}/docker-machine-driver-harvester-amd64.tar.gz && \
+    tar -xf docker-machine-driver-harvester-amd64.tar.gz -C /opt/drivers/management-state/bin && \
+    cp /opt/drivers/management-state/bin/docker-machine-driver-harvester /usr/share/rancher/ui/assets/ && \
+    rm docker-machine-driver-harvester-amd64.tar.gz
 
 ENV TINI_URL_amd64=https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini \
     TINI_URL_arm64=https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-arm64 \
+    TINI_URL_s390x=https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-s390x \
     TINI_URL=TINI_URL_${ARCH}
 
 ENV HELM_URL_V2_amd64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/rancher-helm \
@@ -75,38 +100,82 @@ ENV HELM_URL_V2_amd64=https://github.com/rancher/helm/releases/download/${CATTLE
     TILLER_URL_amd64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/rancher-tiller \
     TILLER_URL_arm64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/rancher-tiller-arm64 \
     TILLER_URL=TILLER_URL_${ARCH} \
-    K3S_URL_amd64=https://github.com/rancher/k3s/releases/download/${CATTLE_K3S_VERSION}/k3s \
-    K3S_URL_arm64=https://github.com/rancher/k3s/releases/download/${CATTLE_K3S_VERSION}/k3s-arm64 \
-    K3S_URL=K3S_URL_${ARCH} \
     ETCD_URL=https://github.com/etcd-io/etcd/releases/download/${CATTLE_ETCD_VERSION}/etcd-${CATTLE_ETCD_VERSION}-linux-${ARCH}.tar.gz \
     KUSTOMIZE_URL=https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_${ARCH}.tar.gz
 
 RUN curl -sLf ${KUSTOMIZE_URL} | tar -xzf - -C /usr/bin
 
-# set up helm 2
-RUN curl -sLf ${!HELM_URL_V2} > /usr/bin/rancher-helm && \
-    curl -sLf ${!TILLER_URL} > /usr/bin/rancher-tiller && \
-    ln -s /usr/bin/rancher-helm /usr/bin/helm && \
-    ln -s /usr/bin/rancher-tiller /usr/bin/tiller && \
-    chmod +x /usr/bin/rancher-helm /usr/bin/rancher-tiller
+RUN if [ "${ARCH}" != "s390x" ]; then \
+        curl -sLf ${!HELM_URL_V2} > /usr/bin/rancher-helm && \
+        curl -sLf ${!TILLER_URL} > /usr/bin/rancher-tiller && \
+        ln -s /usr/bin/rancher-helm /usr/bin/helm && \
+        ln -s /usr/bin/rancher-tiller /usr/bin/tiller && \
+        chmod +x /usr/bin/rancher-helm /usr/bin/rancher-tiller; \
+    fi
 
 # set up helm 3
 RUN curl ${HELM_URL_V3} | tar xvzf - --strip-components=1 -C /usr/bin && \
     mv /usr/bin/helm /usr/bin/helm_v3 && \
     chmod +x /usr/bin/kustomize
 
+# Set up K3s: copy the necessary binaries from the K3s image.
+COPY --from=k3s_builder \
+    /bin/blkid \
+    /bin/charon \
+    /bin/cni \
+    /bin/conntrack \
+    /bin/containerd \
+    /bin/containerd-shim-runc-v2 \
+    /bin/ethtool \
+    /bin/ip \
+    /bin/ipset \
+    /bin/losetup \
+    /bin/pigz \
+    /bin/runc \
+    /bin/swanctl \
+    /bin/which \
+    /bin/aux/xtables-legacy-multi \
+/usr/bin/
+
+RUN if [ "${ARCH}" != "s390x" ]; then \
+        ln -s /usr/bin/cni /usr/bin/bridge && \
+        ln -s /usr/bin/cni /usr/bin/flannel && \
+        ln -s /usr/bin/cni /usr/bin/host-local && \
+        ln -s /usr/bin/cni /usr/bin/loopback && \
+        ln -s /usr/bin/cni /usr/bin/portmap && \
+        ln -s /usr/bin/containerd /usr/bin/crictl && \
+        ln -s /usr/bin/containerd /usr/bin/ctr && \
+        ln -s /usr/bin/containerd /usr/bin/k3s && \
+        ln -s /usr/bin/containerd /usr/bin/k3s-agent && \
+        ln -s /usr/bin/containerd /usr/bin/k3s-etcd-snapshot && \
+        ln -s /usr/bin/containerd /usr/bin/k3s-server && \
+        ln -s /usr/bin/containerd /usr/bin/kubectl && \
+        ln -s /usr/bin/pigz /usr/bin/unpigz && \
+        ln -s /usr/bin/xtables-legacy-multi /usr/bin/iptables && \
+        ln -s /usr/bin/xtables-legacy-multi /usr/bin/iptables-save && \
+        ln -s /usr/bin/xtables-legacy-multi /usr/bin/iptables-restore && \
+        ln -s /usr/bin/xtables-legacy-multi /usr/bin/iptables-translate && \
+        ln -s /usr/bin/xtables-legacy-multi /usr/bin/ip6tables && \
+        ln -s /usr/bin/xtables-legacy-multi /usr/bin/ip6tables-save && \
+        ln -s /usr/bin/xtables-legacy-multi /usr/bin/ip6tables-restore && \
+        ln -s /usr/bin/xtables-legacy-multi /usr/bin/ip6tables-translate; \
+    fi
+
 RUN curl -sLf ${!TINI_URL} > /usr/bin/tini && \
-    curl -sLf ${!K3S_URL} > /usr/bin/k3s && \
     mkdir -p /var/lib/rancher/k3s/agent/images/ && \
-    curl -sfL ${ETCD_URL} | tar xvzf - --strip-components=1 -C /usr/bin/ etcd-${CATTLE_ETCD_VERSION}-linux-${ARCH}/etcd etcd-${CATTLE_ETCD_VERSION}-linux-${ARCH}/etcdctl && \
+    curl -sfL ${ETCD_URL} | tar xvzf - --strip-components=1 -C /usr/bin/ etcd-${CATTLE_ETCD_VERSION}-linux-${ARCH}/etcdctl && \
     curl -sLf https://github.com/rancher/telemetry/releases/download/${TELEMETRY_VERSION}/telemetry-${ARCH} > /usr/bin/telemetry && \
-    curl -sLf https://storage.googleapis.com/kubernetes-release/release/${CATTLE_K3S_VERSION%+*}/bin/linux/${ARCH}/kubectl > /usr/bin/kubectl && \
-    chmod +x /usr/bin/tini /usr/bin/telemetry /usr/bin/k3s /usr/bin/kubectl && \
+    chmod +x /usr/bin/tini /usr/bin/telemetry && \
     mkdir -p /var/lib/rancher-data/driver-metadata
 
-ENV CATTLE_UI_VERSION 2.6.2
-ENV CATTLE_DASHBOARD_UI_VERSION v2.6.2
-ENV CATTLE_CLI_VERSION v2.4.13
+RUN  if [ "${ARCH}" == "s390x" ]; then \
+      curl -sLf https://storage.googleapis.com/kubernetes-release/release/${CATTLE_K3S_VERSION%+*}/bin/linux/${ARCH}/kubectl > /usr/bin/kubectl && \
+      chmod +x /usr/bin/kubectl; \
+     fi
+
+ENV CATTLE_UI_VERSION 2.6.4-rc3
+ENV CATTLE_DASHBOARD_UI_VERSION v2.6.4-rc3
+ENV CATTLE_CLI_VERSION v2.6.4-rc1
 
 # Please update the api-ui-version in pkg/settings/settings.go when updating the version here.
 ENV CATTLE_API_UI_VERSION 1.1.9
@@ -137,8 +206,10 @@ RUN mkdir -p /usr/share/rancher/ui && \
     curl -sfL https://github.com/rancher/system-agent/releases/download/${CATTLE_SYSTEM_AGENT_VERSION}/rancher-system-agent-arm -O && \
     curl -sfL https://github.com/rancher/system-agent/releases/download/${CATTLE_SYSTEM_AGENT_VERSION}/rancher-system-agent-arm64 -O && \
     curl -sfL https://github.com/rancher/system-agent/releases/download/${CATTLE_SYSTEM_AGENT_VERSION}/rancher-system-agent-amd64 -O && \
+    curl -sfL https://github.com/rancher/system-agent/releases/download/${CATTLE_SYSTEM_AGENT_VERSION}/rancher-system-agent-s390x -O && \
     curl -sfL https://github.com/rancher/system-agent/releases/download/${CATTLE_SYSTEM_AGENT_VERSION}/install.sh -o system-agent-install.sh && \
-    curl -sfL https://raw.githubusercontent.com/rancher/rke2/master/windows/rke2-install.ps1 -o rke2-install.ps1
+    curl -sfL https://raw.githubusercontent.com/rancher/rke2/master/windows/rke2-install.ps1 -o rke2-install.ps1 && \
+    curl -sfL https://raw.githubusercontent.com/rancher/wins/main/install.ps1 -o wins-agent-install.ps1
 
 ENV CATTLE_CLI_URL_DARWIN  https://releases.rancher.com/cli2/${CATTLE_CLI_VERSION}/rancher-darwin-amd64-${CATTLE_CLI_VERSION}.tar.gz
 ENV CATTLE_CLI_URL_LINUX   https://releases.rancher.com/cli2/${CATTLE_CLI_VERSION}/rancher-linux-amd64-${CATTLE_CLI_VERSION}.tar.gz
@@ -157,7 +228,6 @@ COPY data.json /var/lib/rancher-data/driver-metadata/
 
 ENV CATTLE_AGENT_IMAGE ${IMAGE_REPO}/rancher-agent:${VERSION}
 ENV CATTLE_SERVER_IMAGE ${IMAGE_REPO}/rancher
-ENV ETCD_UNSUPPORTED_ARCH=${ARCH}
 ENV ETCDCTL_API=3
 
 ENV SSL_CERT_DIR /etc/rancher/ssl

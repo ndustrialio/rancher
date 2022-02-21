@@ -21,6 +21,8 @@ then
      echo -e "node-external-ip: ${4}" >> /etc/rancher/rke2/config.yaml
    fi
    cat /etc/rancher/rke2/config.yaml
+else
+  echo -e "node-external-ip: ${4}" >> /etc/rancher/rke2/config.yaml
 fi
 
 if [[ ${1} == *"rhel"* ]]
@@ -60,7 +62,7 @@ then
            cp -f /usr/local/share/rke2/rke2-cis-sysctl.conf /etc/sysctl.d/60-rke2-cis.conf
        fi
        systemctl restart systemd-sysctl
-       useradd -r -c "etcd user" -s /sbin/nologin -M etcd
+       useradd -r -c "etcd user" -s /sbin/nologin -M etcd -U
    fi
    sudo systemctl enable rke2-server
    sudo systemctl start rke2-server

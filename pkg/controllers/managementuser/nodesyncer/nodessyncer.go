@@ -2,14 +2,17 @@ package nodesyncer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 
 	"github.com/pkg/errors"
+	cond "github.com/rancher/norman/condition"
 	v32 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	kd "github.com/rancher/rancher/pkg/controllers/management/kontainerdrivermetadata"
+	"github.com/rancher/rancher/pkg/controllers/managementagent/podresources"
 	"github.com/rancher/rancher/pkg/controllers/managementlegacy/compose/common"
 	v1 "github.com/rancher/rancher/pkg/generated/norman/core/v1"
 	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
@@ -46,7 +49,6 @@ type nodesSyncer struct {
 	machineLister        v3.NodeLister
 	nodeLister           v1.NodeLister
 	nodeClient           v1.NodeInterface
-	podLister            v1.PodLister
 	clusterNamespace     string
 	clusterLister        v3.ClusterLister
 	serviceOptionsLister v3.RkeK8sServiceOptionLister
@@ -78,7 +80,6 @@ func Register(ctx context.Context, cluster *config.UserContext, kubeConfigGetter
 		machineLister:        cluster.Management.Management.Nodes(cluster.ClusterName).Controller().Lister(),
 		nodeLister:           cluster.Core.Nodes("").Controller().Lister(),
 		nodeClient:           cluster.Core.Nodes(""),
-		podLister:            cluster.Core.Pods("").Controller().Lister(),
 		clusterLister:        cluster.Management.Management.Clusters("").Controller().Lister(),
 		serviceOptionsLister: cluster.Management.Management.RkeK8sServiceOptions("").Controller().Lister(),
 		serviceOptions:       cluster.Management.Management.RkeK8sServiceOptions(""),
@@ -148,11 +149,7 @@ func (n *nodeSyncer) needUpdate(key string, node *corev1.Node) (bool, error) {
 		}
 		return true, nil
 	}
-	nodeToPodMap, err := n.nodesSyncer.getNonTerminatedPods()
-	if err != nil {
-		return false, err
-	}
-	toUpdate, err := n.nodesSyncer.convertNodeToMachine(node, existing, nodeToPodMap)
+	toUpdate, err := n.nodesSyncer.convertNodeToMachine(node, existing)
 	if err != nil {
 		return false, err
 	}
@@ -415,17 +412,12 @@ func (m *nodesSyncer) reconcileAll() error {
 		}
 		machineMap[node.Name] = machine
 	}
-	nodeToPodMap, err := m.getNonTerminatedPods()
-	if err != nil {
-		return err
-	}
-
 	nodeCache := &NodeCache{}
 
 	// reconcile machines for existing nodes
 	for name, node := range nodeMap {
 		machine := machineMap[name]
-		err = m.reconcileNodeForNode(machine, node, nodeCache, nodeToPodMap)
+		err = m.reconcileNodeForNode(machine, node, nodeCache)
 		if err != nil {
 			return err
 		}
@@ -448,11 +440,11 @@ func (m *nodesSyncer) reconcileAll() error {
 	return nil
 }
 
-func (m *nodesSyncer) reconcileNodeForNode(machine *v3.Node, node *corev1.Node, nodeCache *NodeCache, pods map[string][]*corev1.Pod) error {
+func (m *nodesSyncer) reconcileNodeForNode(machine *v3.Node, node *corev1.Node, nodeCache *NodeCache) error {
 	if machine == nil {
-		return m.createNode(node, nodeCache, pods)
+		return m.createNode(node, nodeCache)
 	}
-	return m.updateNode(machine, node, pods)
+	return m.updateNode(machine, node)
 }
 
 func (m *nodesSyncer) removeNode(machine *v3.Node) error {
@@ -472,8 +464,8 @@ func (m *nodesSyncer) removeNode(machine *v3.Node) error {
 	return nil
 }
 
-func (m *nodesSyncer) updateNode(existing *v3.Node, node *corev1.Node, pods map[string][]*corev1.Pod) error {
-	toUpdate, err := m.convertNodeToMachine(node, existing, pods)
+func (m *nodesSyncer) updateNode(existing *v3.Node, node *corev1.Node) error {
+	toUpdate, err := m.convertNodeToMachine(node, existing)
 	if err != nil {
 		return err
 	}
@@ -490,7 +482,7 @@ func (m *nodesSyncer) updateNode(existing *v3.Node, node *corev1.Node, pods map[
 	return nil
 }
 
-func (m *nodesSyncer) createNode(node *corev1.Node, nodeCache *NodeCache, pods map[string][]*corev1.Pod) error {
+func (m *nodesSyncer) createNode(node *corev1.Node, nodeCache *NodeCache) error {
 	// respect user defined name or label
 	if nodehelper.IgnoreNode(node.Name, node.Labels) {
 		logrus.Debugf("Skipping v3.node creation for [%v] node", node.Name)
@@ -505,7 +497,7 @@ func (m *nodesSyncer) createNode(node *corev1.Node, nodeCache *NodeCache, pods m
 	if existing != nil {
 		return nil
 	}
-	machine, err := m.convertNodeToMachine(node, existing, pods)
+	machine, err := m.convertNodeToMachine(node, existing)
 	if err != nil {
 		return err
 	}
@@ -593,6 +585,7 @@ func objectsAreEqual(existing *v3.Node, toUpdate *v3.Node) bool {
 	toUpdateToCompare := resetConditions(toUpdate)
 	existingToCompare := resetConditions(existing)
 	statusEqual := statusEqualTest(toUpdateToCompare.Status.InternalNodeStatus, existingToCompare.Status.InternalNodeStatus)
+	conditionsEqual := reflect.DeepEqual(toUpdateToCompare.Status.Conditions, existing.Status.Conditions)
 	labelsEqual := reflect.DeepEqual(toUpdateToCompare.Status.NodeLabels, existing.Status.NodeLabels) && reflect.DeepEqual(toUpdateToCompare.Labels, existing.Labels)
 	annotationsEqual := reflect.DeepEqual(toUpdateToCompare.Status.NodeAnnotations, existing.Status.NodeAnnotations)
 	specEqual := reflect.DeepEqual(toUpdateToCompare.Spec.InternalNodeSpec, existingToCompare.Spec.InternalNodeSpec)
@@ -602,11 +595,11 @@ func objectsAreEqual(existing *v3.Node, toUpdate *v3.Node) bool {
 	rolesEqual := toUpdateToCompare.Spec.Worker == existingToCompare.Spec.Worker && toUpdateToCompare.Spec.Etcd == existingToCompare.Spec.Etcd &&
 		toUpdateToCompare.Spec.ControlPlane == existingToCompare.Spec.ControlPlane
 
-	retVal := statusEqual && specEqual && nodeNameEqual && labelsEqual && annotationsEqual && requestsEqual && limitsEqual && rolesEqual
+	retVal := statusEqual && conditionsEqual && specEqual && nodeNameEqual && labelsEqual && annotationsEqual && requestsEqual && limitsEqual && rolesEqual
 	if !retVal {
-		logrus.Debugf("ObjectsAreEqualResults for %s: statusEqual: %t specEqual: %t"+
+		logrus.Debugf("ObjectsAreEqualResults for %s: statusEqual: %t conditionsEqual: %t specEqual: %t"+
 			" nodeNameEqual: %t labelsEqual: %t annotationsEqual: %t requestsEqual: %t limitsEqual: %t rolesEqual: %t",
-			toUpdate.Name, statusEqual, specEqual, nodeNameEqual, labelsEqual, annotationsEqual, requestsEqual, limitsEqual, rolesEqual)
+			toUpdate.Name, statusEqual, conditionsEqual, specEqual, nodeNameEqual, labelsEqual, annotationsEqual, requestsEqual, limitsEqual, rolesEqual)
 	}
 	return retVal
 }
@@ -680,7 +673,63 @@ func statusEqualTest(proposed, existing corev1.NodeStatus) bool {
 	return true
 }
 
-func (m *nodesSyncer) convertNodeToMachine(node *corev1.Node, existing *v3.Node, pods map[string][]*corev1.Pod) (*v3.Node, error) {
+func cleanStatus(machine *v3.Node) {
+	var conditions []corev1.NodeCondition
+	for _, condition := range machine.Status.InternalNodeStatus.Conditions {
+		if condition.Type == "Ready" {
+			conditions = append(conditions, condition)
+			readyCondition := v32.NodeCondition{
+				Type:               cond.Cond(condition.Type),
+				Status:             condition.Status,
+				LastTransitionTime: condition.LastTransitionTime.String(),
+				LastUpdateTime:     condition.LastHeartbeatTime.String(),
+				Reason:             condition.Reason,
+				Message:            condition.Message,
+			}
+			var exists bool
+			for i, cond := range machine.Status.Conditions {
+				if cond.Type == "Ready" {
+					exists = true
+					machine.Status.Conditions[i] = readyCondition
+					break
+				}
+			}
+			if !exists {
+				machine.Status.Conditions = append(machine.Status.Conditions, readyCondition)
+			}
+		}
+	}
+
+	machine.Status.InternalNodeStatus.Config = nil
+	machine.Status.InternalNodeStatus.VolumesInUse = nil
+	machine.Status.InternalNodeStatus.VolumesAttached = nil
+	machine.Status.InternalNodeStatus.Images = nil
+	machine.Status.InternalNodeStatus.Conditions = conditions
+
+	annoMap := make(map[string]string, len(machine.Status.NodeAnnotations))
+	for key, val := range machine.Status.NodeAnnotations {
+		if key == podresources.LimitsAnnotation || key == podresources.RequestsAnnotation {
+			continue
+		}
+		annoMap[key] = val
+	}
+
+	machine.Status.NodeAnnotations = annoMap
+}
+
+func getResourceList(annotation string, node *corev1.Node) corev1.ResourceList {
+	val := node.Annotations[annotation]
+	if val == "" {
+		return nil
+	}
+	result := corev1.ResourceList{}
+	if err := json.Unmarshal([]byte(val), &result); err != nil {
+		return corev1.ResourceList{}
+	}
+	return result
+}
+
+func (m *nodesSyncer) convertNodeToMachine(node *corev1.Node, existing *v3.Node) (*v3.Node, error) {
 	var machine *v3.Node
 	if existing == nil {
 		machine = &v3.Node{
@@ -701,7 +750,8 @@ func (m *nodesSyncer) convertNodeToMachine(node *corev1.Node, existing *v3.Node,
 		machine.Status.InternalNodeStatus = *node.Status.DeepCopy()
 	}
 
-	requests, limits := aggregateRequestAndLimitsForNode(pods[node.Name])
+	requests := getResourceList(podresources.RequestsAnnotation, node)
+	limits := getResourceList(podresources.LimitsAnnotation, node)
 	if machine.Status.Requested == nil {
 		machine.Status.Requested = corev1.ResourceList{}
 	}
@@ -715,9 +765,15 @@ func (m *nodesSyncer) convertNodeToMachine(node *corev1.Node, existing *v3.Node,
 	for name, quantity := range limits {
 		machine.Status.Limits[name] = quantity
 	}
-	machine.Status.NodeLabels = node.Labels
+	machine.Status.NodeLabels = make(map[string]string, len(node.Labels))
+	for k, v := range node.Labels {
+		machine.Status.NodeLabels[k] = v
+	}
 	determineNodeRoles(machine)
-	machine.Status.NodeAnnotations = node.Annotations
+	machine.Status.NodeAnnotations = make(map[string]string, len(node.Annotations))
+	for k, v := range node.Annotations {
+		machine.Status.NodeAnnotations[k] = v
+	}
 	machine.Status.NodeName = node.Name
 	machine.APIVersion = "management.cattle.io/v3"
 	machine.Kind = "Node"
@@ -725,47 +781,10 @@ func (m *nodesSyncer) convertNodeToMachine(node *corev1.Node, existing *v3.Node,
 		machine.Labels = map[string]string{}
 	}
 	machine.Labels[nodehelper.LabelNodeName] = node.Name
+	cleanStatus(machine)
 	v32.NodeConditionRegistered.True(machine)
 	v32.NodeConditionRegistered.Message(machine, "registered with kubernetes")
 	return machine, nil
-}
-
-func (m *nodesSyncer) getNonTerminatedPods() (map[string][]*corev1.Pod, error) {
-	pods := make(map[string][]*corev1.Pod)
-	fromCache, err := m.podLister.List("", labels.NewSelector())
-	if err != nil {
-		return pods, err
-	}
-
-	for _, pod := range fromCache {
-		if pod.Spec.NodeName == "" {
-			continue
-		}
-		// kubectl uses this cache to filter out the pods
-		if pod.Status.Phase == "Succeeded" || pod.Status.Phase == "Failed" {
-			continue
-		}
-		var nodePods []*corev1.Pod
-		if fromMap, ok := pods[pod.Spec.NodeName]; ok {
-			nodePods = fromMap
-		}
-		nodePods = append(nodePods, pod)
-		pods[pod.Spec.NodeName] = nodePods
-	}
-	return pods, nil
-}
-
-func aggregateRequestAndLimitsForNode(pods []*corev1.Pod) (map[corev1.ResourceName]resource.Quantity, map[corev1.ResourceName]resource.Quantity) {
-	requests, limits := map[corev1.ResourceName]resource.Quantity{}, map[corev1.ResourceName]resource.Quantity{}
-	for _, pod := range pods {
-		podRequests, podLimits := getPodData(pod)
-		addMap(podRequests, requests)
-		addMap(podLimits, limits)
-	}
-	if pods != nil {
-		requests[corev1.ResourcePods] = *resource.NewQuantity(int64(len(pods)), resource.DecimalSI)
-	}
-	return requests, limits
 }
 
 func isEqual(data1 map[corev1.ResourceName]resource.Quantity, data2 map[corev1.ResourceName]resource.Quantity) bool {
@@ -785,44 +804,6 @@ func isEqual(data1 map[corev1.ResourceName]resource.Quantity, data2 map[corev1.R
 		}
 	}
 	return true
-}
-
-func getPodData(pod *corev1.Pod) (map[corev1.ResourceName]resource.Quantity, map[corev1.ResourceName]resource.Quantity) {
-	requests, limits := map[corev1.ResourceName]resource.Quantity{}, map[corev1.ResourceName]resource.Quantity{}
-	for _, container := range pod.Spec.Containers {
-		addMap(container.Resources.Requests, requests)
-		addMap(container.Resources.Limits, limits)
-	}
-
-	for _, container := range pod.Spec.InitContainers {
-		addMapForInit(container.Resources.Requests, requests)
-		addMapForInit(container.Resources.Limits, limits)
-	}
-	return requests, limits
-}
-
-func addMap(data1 map[corev1.ResourceName]resource.Quantity, data2 map[corev1.ResourceName]resource.Quantity) {
-	for name, quantity := range data1 {
-		if value, ok := data2[name]; !ok {
-			data2[name] = quantity.DeepCopy()
-		} else {
-			value.Add(quantity)
-			data2[name] = value
-		}
-	}
-}
-
-func addMapForInit(data1 map[corev1.ResourceName]resource.Quantity, data2 map[corev1.ResourceName]resource.Quantity) {
-	for name, quantity := range data1 {
-		value, ok := data2[name]
-		if !ok {
-			data2[name] = quantity.DeepCopy()
-			continue
-		}
-		if quantity.Cmp(value) > 0 {
-			data2[name] = quantity.DeepCopy()
-		}
-	}
 }
 
 func (m *nodesSyncer) isClusterRestoring() (bool, error) {

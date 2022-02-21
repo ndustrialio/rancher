@@ -5,15 +5,13 @@ source $(dirname $0)/version
 
 ARCH=${ARCH:-"amd64"}
 SYSTEM_CHART_REPO_DIR=build/system-charts
-SYSTEM_CHART_DEFAULT_BRANCH=${SYSTEM_CHART_DEFAULT_BRANCH:-"release-v2.6"}
+SYSTEM_CHART_DEFAULT_BRANCH=${SYSTEM_CHART_DEFAULT_BRANCH:-"dev-v2.6"}
 CHART_REPO_DIR=build/charts
-CHART_DEFAULT_BRANCH=${CHART_DEFAULT_BRANCH:-"release-v2.6"}
+CHART_DEFAULT_BRANCH=${CHART_DEFAULT_BRANCH:-"dev-v2.6"}
 
 cd $(dirname $0)/../package
 
 ../scripts/k3s-images.sh
-
-../scripts/create-components-file.sh
 
 cp ../bin/rancher.yaml ../bin/rancher-namespace.yaml ../bin/rancher ../bin/agent ../bin/data.json ../bin/k3s-airgap-images.tar .
 
@@ -40,8 +38,14 @@ SYSTEM_AGENT_INSTALLER_K3S_IMAGES=( "${K3S_RELEASE_TAGS[@]/#/${REPO}/system-agen
 if [ ${ARCH} == arm64 ]; then
     sed -i -e '$a\' -e 'ENV ETCD_UNSUPPORTED_ARCH=arm64' Dockerfile
 fi
-
-docker build --build-arg VERSION=${TAG} --build-arg ARCH=${ARCH} --build-arg IMAGE_REPO=${REPO} --build-arg SYSTEM_CHART_DEFAULT_BRANCH=${SYSTEM_CHART_DEFAULT_BRANCH} --build-arg CHART_DEFAULT_BRANCH=${CHART_DEFAULT_BRANCH} -t ${IMAGE} .
+if [ ${ARCH} == s390x ]; then
+    sed -i -e '$a\' -e 'ENV ETCD_UNSUPPORTED_ARCH=s390x' Dockerfile
+    # Use k3s root binaries for s390x as k3s is not available
+    K3S_BUILDER=k3s_root
+    docker build --build-arg VERSION=${TAG} --build-arg ARCH=${ARCH} --build-arg IMAGE_REPO=${REPO} --build-arg SYSTEM_CHART_DEFAULT_BRANCH=${SYSTEM_CHART_DEFAULT_BRANCH} --build-arg CHART_DEFAULT_BRANCH=${CHART_DEFAULT_BRANCH} --build-arg K3S_BUILDER=${K3S_BUILDER} -t ${IMAGE} .
+else
+    docker build --build-arg VERSION=${TAG} --build-arg ARCH=${ARCH} --build-arg IMAGE_REPO=${REPO} --build-arg SYSTEM_CHART_DEFAULT_BRANCH=${SYSTEM_CHART_DEFAULT_BRANCH} --build-arg CHART_DEFAULT_BRANCH=${CHART_DEFAULT_BRANCH} -t ${IMAGE} .
+fi
 
 docker build --build-arg VERSION=${TAG} --build-arg ARCH=${ARCH} --build-arg RANCHER_TAG=${TAG} --build-arg RANCHER_REPO=${REPO} -t ${AGENT_IMAGE} -f Dockerfile.agent .
 if [ "${ARCH}" == amd64 ]; then
@@ -62,28 +66,12 @@ if [ ! -d build/system-charts ]; then
 fi
 
 if [ ! -d $CHART_REPO_DIR ]; then
-    INDEX_PATH=$CHART_REPO_DIR/index.yaml
     git clone --branch $CHART_DEFAULT_BRANCH https://github.com/rancher/charts $CHART_REPO_DIR
-
-    # Get list of paths to tarballs of the latest version of each chart from Helm repo's index.yaml
-    LATEST_TGZ_PATHS=$(yq r $INDEX_PATH "entries.*.[0].urls[0]")
-
-    # Extract the tarballs in the list, skip extracting CRD charts
-    for TGZ_PATH in $LATEST_TGZ_PATHS; do
-        TGZ_REL_PATH=$CHART_REPO_DIR/$TGZ_PATH
-        TGZ_EXTRACT_PATH=$(dirname $CHART_REPO_DIR/${TGZ_PATH##released/})
-        echo "Extract: $TGZ_REL_PATH to $TGZ_EXTRACT_PATH"
-        mkdir -p $TGZ_EXTRACT_PATH
-        tar -xf $TGZ_REL_PATH -C $TGZ_EXTRACT_PATH
-    done
-
-    # Remove index to force building a virtual index like system charts
-    rm -f $INDEX_PATH $CHART_REPO_DIR/assets/index.yaml
 fi
 
 if [ ${ARCH} == amd64 ]; then
     # Move this out of ARCH check for local dev on non-amd64 hardware.
-    TAG=$TAG REPO=${REPO} go run ../pkg/image/export/main.go $SYSTEM_CHART_REPO_DIR $CHART_REPO_DIR/assets $IMAGE $AGENT_IMAGE $RUNTIME_IMAGE $SYSTEM_AGENT_UPGRADE_IMAGE $SYSTEM_AGENT_INSTALLER_RKE2_IMAGES $SYSTEM_AGENT_INSTALLER_K3S_IMAGES
+    TAG=$TAG REPO=${REPO} go run ../pkg/image/export/main.go $SYSTEM_CHART_REPO_DIR $CHART_REPO_DIR $IMAGE $AGENT_IMAGE $RUNTIME_IMAGE $SYSTEM_AGENT_UPGRADE_IMAGE ${SYSTEM_AGENT_INSTALLER_RKE2_IMAGES[@]} ${SYSTEM_AGENT_INSTALLER_K3S_IMAGES[@]}
 
     # rancherd tarball
     rm -rf build/rancherd/bundle
@@ -92,3 +80,5 @@ if [ ${ARCH} == amd64 ]; then
     cp -vf rancherd build/rancherd/bundle/bin
     tar czf rancherd-${ARCH}.tar.gz -C build/rancherd/bundle .
 fi
+
+../scripts/create-components-file.sh

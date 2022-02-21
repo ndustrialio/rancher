@@ -26,7 +26,7 @@ AWS_CICD_INSTANCE_TAG = os.environ.get("AWS_CICD_INSTANCE_TAG",
                                        'rancher-validation')
 AWS_IAM_PROFILE = os.environ.get("AWS_IAM_PROFILE", "")
 # by default the public Ubuntu 18.04 AMI is used
-AWS_DEFAULT_AMI = "ami-0d5d9d301c853a04a"
+AWS_DEFAULT_AMI = "ami-0c3357e45c1a0eebe"
 AWS_DEFAULT_USER = "ubuntu"
 AWS_AMI = os.environ.get("AWS_AMI", AWS_DEFAULT_AMI)
 AWS_USER = os.environ.get("AWS_USER", AWS_DEFAULT_USER)
@@ -474,6 +474,27 @@ class AmazonWebServices(CloudProviderBase):
     def upsert_route_53_record_cname(
             self, record_name, record_value, action='UPSERT',
             record_type='CNAME', record_ttl=300):
+        return self._route53_client.change_resource_record_sets(
+            HostedZoneId=AWS_HOSTED_ZONE_ID,
+            ChangeBatch={
+                'Comment': 'Record created or updated for automation',
+                'Changes': [{
+                    'Action': action,
+                    'ResourceRecordSet': {
+                        'Name': record_name,
+                        'Type': record_type,
+                        'TTL': record_ttl,
+                        'ResourceRecords': [{
+                            'Value': record_value
+                        }]
+                    }
+                }]
+            }
+        )
+    
+    def upsert_route_53_record_a(
+            self, record_name, record_value, action='UPSERT',
+            record_type='A', record_ttl=300):
         return self._route53_client.change_resource_record_sets(
             HostedZoneId=AWS_HOSTED_ZONE_ID,
             ChangeBatch={

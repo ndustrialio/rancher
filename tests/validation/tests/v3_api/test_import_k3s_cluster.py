@@ -19,8 +19,7 @@ RANCHER_K3S_NO_OF_WORKER_NODES = \
 RANCHER_K3S_SERVER_FLAGS = os.environ.get("RANCHER_K3S_SERVER_FLAGS", "")
 RANCHER_K3S_WORKER_FLAGS = os.environ.get("RANCHER_K3S_WORKER_FLAGS", "agent")
 RANCHER_QA_SPACE = os.environ.get("RANCHER_QA_SPACE", "qa.rancher.space.")
-RANCHER_EC2_INSTANCE_CLASS = os.environ.get("RANCHER_EC2_INSTANCE_CLASS",
-                                            "t3a.medium")
+RANCHER_EC2_INSTANCE_CLASS = os.environ.get("AWS_INSTANCE_TYPE", "t3a.medium")
 
 RANCHER_EXTERNAL_DB = os.environ.get("RANCHER_EXTERNAL_DB", "mysql")
 RANCHER_EXTERNAL_DB_VERSION = os.environ.get("RANCHER_EXTERNAL_DB_VERSION")
@@ -39,6 +38,7 @@ RANCHER_CLUSTER_TYPE = os.environ.get("RANCHER_CLUSTER_TYPE", "external_db")
 AWS_VOLUME_SIZE = os.environ.get("AWS_VOLUME_SIZE", "8")
 RANCHER_RHEL_USERNAME = os.environ.get("RANCHER_RHEL_USERNAME")
 RANCHER_RHEL_PASSWORD = os.environ.get("RANCHER_RHEL_PASSWORD")
+K3S_CREATE_LB = os.environ.get("K3S_CREATE_LB", False)
 
 
 def test_create_k3s_single_control_cluster():
@@ -162,7 +162,8 @@ def create_multiple_control_cluster():
                               'engine_mode': RANCHER_RDS_ENGINE_MODE,
                               'environment': RANCHER_RDS_ENVIRONMENT,
                               'cluster_type': RANCHER_CLUSTER_TYPE,
-                              'volume_size': AWS_VOLUME_SIZE})
+                              'volume_size': AWS_VOLUME_SIZE,
+                              'create_lb': str(K3S_CREATE_LB).lower()})
     print("Creating cluster")
     tf.init()
     tf.plan(out="plan_server.out")
@@ -199,9 +200,7 @@ def create_multiple_control_cluster():
     os.system(cmd)
     is_file = os.path.isfile(k3s_clusterfilepath)
     assert is_file
-    print(k3s_clusterfilepath)
-    with open(k3s_clusterfilepath, 'r') as f:
-        print(f.read())
+    print_kubeconfig(k3s_clusterfilepath)
     print("K3s Cluster Created")
     cmd = "kubectl get nodes -o wide --kubeconfig=" + k3s_clusterfilepath
     print(run_command(cmd))

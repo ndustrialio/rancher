@@ -4,11 +4,15 @@ from pkg_resources import packaging
 from .common import *  # NOQA
 from .test_boto_create_eks import get_eks_kubeconfig
 from .test_import_k3s_cluster import create_multiple_control_cluster
+from .test_import_rke2_cluster import (
+    RANCHER_RKE2_VERSION, create_rke2_multiple_control_cluster
+)
 from .test_rke_cluster_provisioning import rke_config
 
 # RANCHER_HA_KUBECONFIG and RANCHER_HA_HOSTNAME are provided
 # when installing Rancher into a k3s setup
 RANCHER_HA_KUBECONFIG = os.environ.get("RANCHER_HA_KUBECONFIG")
+RANCHER_HA_HARDENED = ast.literal_eval(os.environ.get("RANCHER_HA_HARDENED", "False"))
 RANCHER_HA_HOSTNAME = os.environ.get(
     "RANCHER_HA_HOSTNAME", RANCHER_HOSTNAME_PREFIX + ".qa.rancher.space")
 resource_prefix = RANCHER_HA_HOSTNAME.split(".qa.rancher.space")[0]
@@ -33,7 +37,6 @@ RANCHER_LOCAL_CLUSTER_TYPE = os.environ.get("RANCHER_LOCAL_CLUSTER_TYPE")
 RANCHER_ADD_CUSTOM_CLUSTER = os.environ.get("RANCHER_ADD_CUSTOM_CLUSTER",
                                             "True")
 KUBERNETES_VERSION = os.environ.get("RANCHER_LOCAL_KUBERNETES_VERSION","")
-RANCHER_K3S_VERSION = os.environ.get("RANCHER_K3S_VERSION", "")
 
 kubeconfig_path = DATA_SUBDIR + "/kube_config_cluster-ha-filled.yml"
 export_cmd = "export KUBECONFIG=" + kubeconfig_path
@@ -75,6 +78,13 @@ def test_install_rancher_ha(precheck_certificate_options):
         if RANCHER_LOCAL_CLUSTER_TYPE == "RKE":
             print("RKE cluster is provisioning for the local cluster")
             nodes = create_resources()
+            if RANCHER_HA_HARDENED:
+                profile = 'rke-cis-1.5'
+                node_role = [["worker", "controlplane", "etcd"]]
+                node_roles =[]
+                for role in node_role:
+                    node_roles.extend([role, role, role])
+                prepare_hardened_nodes(nodes, profile, node_roles)
             config_path = create_rke_cluster_config(nodes)
             create_rke_cluster(config_path)
         elif RANCHER_LOCAL_CLUSTER_TYPE == "K3S":
@@ -82,6 +92,13 @@ def test_install_rancher_ha(precheck_certificate_options):
             k3s_kubeconfig_path = \
                 create_multiple_control_cluster()
             cmd = "cp {0} {1}".format(k3s_kubeconfig_path, kubeconfig_path)
+            run_command_with_stderr(cmd)
+        elif RANCHER_LOCAL_CLUSTER_TYPE == "RKE2":
+            print("RKE2 cluster is provisioning for the local cluster")
+            rke2_kubeconfig_path = \
+                create_rke2_multiple_control_cluster("rke2",
+                                                     RANCHER_RKE2_VERSION)
+            cmd = "cp {0} {1}".format(rke2_kubeconfig_path, kubeconfig_path)
             run_command_with_stderr(cmd)
         elif RANCHER_LOCAL_CLUSTER_TYPE == "EKS":
             create_resources_eks()
@@ -115,7 +132,9 @@ def test_install_rancher_ha(precheck_certificate_options):
         print("Error: {0}".format(e))
         assert False, "check the logs in console for details"
 
-    print_kubeconfig()
+    print_kubeconfig(kubeconfig_path)
+    if RANCHER_HA_HARDENED and RANCHER_LOCAL_CLUSTER_TYPE == "RKE":
+        prepare_hardened_cluster(profile, kubeconfig_path)
     if RANCHER_LOCAL_CLUSTER_TYPE == "RKE":
         check_rke_ingress_rollout()
     if cm_install:
@@ -136,6 +155,8 @@ def test_install_rancher_ha(precheck_certificate_options):
     admin_client = set_url_and_password(RANCHER_SERVER_URL)
     cluster = get_cluster_by_name(admin_client, "local")
     validate_cluster_state(admin_client, cluster, False)
+    print("Local HA Rancher cluster created successfully! "
+          "Access the UI via:\n{}".format(RANCHER_SERVER_URL))
     if RANCHER_ADD_CUSTOM_CLUSTER.upper() == "TRUE":
         print("creating an custom cluster")
         create_custom_cluster(admin_client)
@@ -384,8 +405,8 @@ def write_kubeconfig():
     file.close()
 
 
-def set_url_and_password(rancher_url, server_url=None):
-    admin_token = set_url_password_token(rancher_url, server_url)
+def set_url_and_password(rancher_url, server_url=None, version=""):
+    admin_token = set_url_password_token(rancher_url, server_url, version=version)
     admin_client = rancher.Client(url=rancher_url + "/v3",
                                   token=admin_token, verify=False)
     auth_url = rancher_url + "/v3-public/localproviders/local?action=login"
@@ -423,16 +444,6 @@ def check_rke_ingress_rollout():
                 "kubectl -n ingress-nginx wait --for=condition=complete job/ingress-nginx-admission-patch")
 
 
-def print_kubeconfig():
-    kubeconfig_file = open(kubeconfig_path, "r")
-    kubeconfig_contents = kubeconfig_file.read()
-    kubeconfig_file.close()
-    kubeconfig_contents_encoded = base64.b64encode(
-        kubeconfig_contents.encode("utf-8")).decode("utf-8")
-    print("\n\n" + kubeconfig_contents + "\n\n")
-    print("\nBase64 encoded: \n\n" + kubeconfig_contents_encoded + "\n\n")
-
-
 def create_rke_cluster_config(aws_nodes):
     configfile = "cluster-ha.yml"
 
@@ -454,6 +465,11 @@ def create_rke_cluster_config(aws_nodes):
 
     rkeconfig = rkeconfig.replace("$AWS_SSH_KEY_NAME", AWS_SSH_KEY_NAME)
     rkeconfig = rkeconfig.replace("$KUBERNETES_VERSION", KUBERNETES_VERSION)
+    
+    if RANCHER_HA_HARDENED:
+        rkeconfig_hardened = readDataFile(DATA_SUBDIR, "hardened-cluster.yml")
+        rkeconfig += "\n"
+        rkeconfig += rkeconfig_hardened
     print("cluster-ha-filled.yml: \n" + rkeconfig + "\n")
 
     clusterfilepath = DATA_SUBDIR + "/" + "cluster-ha-filled.yml"

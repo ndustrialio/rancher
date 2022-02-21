@@ -10,10 +10,10 @@ RANCHER_SUBNETS = os.environ.get("AWS_SUBNET")
 RANCHER_AWS_SG = os.environ.get("AWS_SECURITY_GROUPS")
 RANCHER_AVAILABILITY_ZONE = os.environ.get("AWS_AVAILABILITY_ZONE")
 RANCHER_QA_SPACE = os.environ.get("RANCHER_QA_SPACE", "qa.rancher.space.")
-RANCHER_EC2_INSTANCE_CLASS = os.environ.get("RANCHER_EC2_INSTANCE_CLASS",
-                                            "t3a.medium")
+RANCHER_EC2_INSTANCE_CLASS = os.environ.get("AWS_INSTANCE_TYPE", "t3a.medium")
 HOST_NAME = os.environ.get('RANCHER_HOST_NAME', "sa")
 RANCHER_IAM_ROLE = os.environ.get("RANCHER_IAM_ROLE")
+RKE2_CREATE_LB = os.environ.get("RKE2_CREATE_LB", False)
 
 RANCHER_RKE2_VERSION = os.environ.get("RANCHER_RKE2_VERSION", "")
 RANCHER_RKE2_CHANNEL = os.environ.get("RANCHER_RKE2_CHANNEL", "null")
@@ -57,8 +57,7 @@ def test_create_rancherd_multiple_control_cluster():
 def test_create_rke2_multiple_control_cluster():
     cluster_version = RANCHER_RKE2_VERSION
     cluster_type = "rke2"
-    rke2_clusterfilepath = create_rke2_multiple_control_cluster(cluster_type, \
-                                                                cluster_version)
+    create_rke2_multiple_control_cluster(cluster_type, cluster_version)
 
 
 def test_import_rke2_multiple_control_cluster():
@@ -101,7 +100,8 @@ def create_rke2_multiple_control_cluster(cluster_type, cluster_version):
                               'node_os': RANCHER_RKE2_OPERATING_SYSTEM,
                               'cluster_type': cluster_type,
                               'iam_role': RANCHER_IAM_ROLE,
-                              'volume_size': AWS_VOLUME_SIZE})
+                              'volume_size': AWS_VOLUME_SIZE,
+                              'create_lb': str(RKE2_CREATE_LB).lower()})
     print("Creating cluster")
     tf.init()
     tf.plan(out="plan_server.out")
@@ -131,19 +131,17 @@ def create_rke2_multiple_control_cluster(cluster_type, cluster_version):
                                   'iam_role': RANCHER_IAM_ROLE,
                                   'volume_size': AWS_VOLUME_SIZE})
 
-    print("Joining worker nodes")
-    tf.init()
-    tf.plan(out="plan_worker.out")
-    print(tf.apply("--auto-approve"))
-    print("\n\n")
+        print("Joining worker nodes")
+        tf.init()
+        tf.plan(out="plan_worker.out")
+        print(tf.apply("--auto-approve"))
+        print("\n\n")
     cmd = "cp /tmp/" + RANCHER_HOSTNAME_PREFIX + "_kubeconfig " + \
           rke2_clusterfilepath
     os.system(cmd)
     is_file = os.path.isfile(rke2_clusterfilepath)
     assert is_file
-    print(rke2_clusterfilepath)
-    with open(rke2_clusterfilepath, 'r') as f:
-        print(f.read())
+    print_kubeconfig(rke2_clusterfilepath)
     check_cluster_status(rke2_clusterfilepath)
     print("\n\nRKE2 Cluster Created\n")
     cmd = "kubectl get nodes --kubeconfig=" + rke2_clusterfilepath

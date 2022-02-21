@@ -57,9 +57,9 @@ const (
 	ClusterConditionconditionDefaultProjectCreated condition.Cond = "DefaultProjectCreated"
 	// ClusterConditionconditionSystemProjectCreated true when system project has been created
 	ClusterConditionconditionSystemProjectCreated condition.Cond = "SystemProjectCreated"
-	// ClusterConditionDefaultNamespaceAssigned true when cluster's default namespace has been initially assigned
+	// Deprecated: ClusterConditionDefaultNamespaceAssigned true when cluster's default namespace has been initially assigned
 	ClusterConditionDefaultNamespaceAssigned condition.Cond = "DefaultNamespaceAssigned"
-	// ClusterConditionSystemNamespacesAssigned true when cluster's system namespaces has been initially assigned to
+	// Deprecated: ClusterConditionSystemNamespacesAssigned true when cluster's system namespaces has been initially assigned to
 	// a system project
 	ClusterConditionSystemNamespacesAssigned   condition.Cond = "SystemNamespacesAssigned"
 	ClusterConditionAddonDeploy                condition.Cond = "AddonDeploy"
@@ -71,6 +71,7 @@ const (
 	ClusterConditionPrometheusOperatorDeployed condition.Cond = "PrometheusOperatorDeployed"
 	ClusterConditionMonitoringEnabled          condition.Cond = "MonitoringEnabled"
 	ClusterConditionAlertingEnabled            condition.Cond = "AlertingEnabled"
+	ClusterConditionSecretsMigrated            condition.Cond = "SecretsMigrated"
 
 	ClusterDriverImported = "imported"
 	ClusterDriverLocal    = "local"
@@ -182,6 +183,9 @@ type ClusterStatus struct {
 	AKSStatus                            AKSStatus                   `json:"aksStatus,omitempty" norman:"nocreate,noupdate"`
 	EKSStatus                            EKSStatus                   `json:"eksStatus,omitempty" norman:"nocreate,noupdate"`
 	GKEStatus                            GKEStatus                   `json:"gkeStatus,omitempty" norman:"nocreate,noupdate"`
+	PrivateRegistrySecret                string                      `json:"privateRegistrySecret,omitempty" norman:"nocreate,noupdate"`
+	S3CredentialSecret                   string                      `json:"s3CredentialSecret,omitempty" norman:"nocreate,noupdate"`
+	WeavePasswordSecret                  string                      `json:"weavePasswordSecret,omitempty" norman:"nocreate,noupdate"`
 }
 
 type ClusterComponentStatus struct {

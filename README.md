@@ -10,9 +10,9 @@ Rancher is an open source container management platform built for organizations 
 
 ## Latest Release
 
-* Latest - v2.6.0 - `rancher/rancher:latest` - Read the full release [notes](https://github.com/rancher/rancher/releases/tag/v2.6.0).
+* Latest - v2.6.3 - `rancher/rancher:latest` - Read the full release [notes](https://github.com/rancher/rancher/releases/tag/v2.6.3).
 
-* Stable - v2.5.9 - `rancher/rancher:stable` - Read the full release [notes](https://github.com/rancher/rancher/releases/tag/v2.5.9).
+* Stable - v2.6.3 - `rancher/rancher:stable` - Read the full release [notes](https://github.com/rancher/rancher/releases/tag/v2.6.3).
 
 To get automated notifications of our latest release, you can watch the announcements category in our [forums](http://forums.rancher.com/c/announcements), or subscribe to the RSS feed `https://forums.rancher.com/c/announcements.rss`.
 
@@ -26,16 +26,14 @@ Open your browser to https://localhost
 Rancher can be deployed in either a single node or multi-node setup.  Please refer to the following for guides on how to get Rancher up and running.
 
 * [Single Node Install](https://rancher.com/docs/rancher/v2.x/en/installation/single-node/)
-* [High Availability (HA) Install](https://rancher.com/docs/rancher/v2.x/en/installation/ha/)
+* [High Availability (HA) Install](https://rancher.com/docs/rancher/v2.x/en/installation/install-rancher-on-k8s/)
 
 > **No internet access?**  Refer to our [Air Gap Installation](https://rancher.com/docs/rancher/v2.x/en/installation/air-gap-installation/) for instructions on how to use your own private registry to install Rancher.
 
 ### Minimum Requirements
 
 * Operating Systems
-  * Ubuntu 16.04 (64-bit)
-  * Red Hat Enterprise Linux 7.5 (64-bit)
-  * RancherOS 1.4 (64-bit)
+  * Please see [Support Matrix](https://rancher.com/support-matrix/) for specific OS versions for each Rancher version. Note that the link will default to the support matrix for the latest version of Rancher. Use the left navigation menu to select a different Rancher version. 
 * Hardware
   * 4 GB of Memory
 * Software
@@ -43,7 +41,7 @@ Rancher can be deployed in either a single node or multi-node setup.  Please ref
 
 ### Using Rancher
 
-To learn more about using Rancher, please refer to our [Rancher Documentation](https://rancher.com/docs/rancher/v2.5/en/).
+To learn more about using Rancher, please refer to our [Rancher Documentation](https://rancher.com/docs/rancher/v2.6/en/).
 
 ## Source Code
 

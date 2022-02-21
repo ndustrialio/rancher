@@ -663,16 +663,25 @@ def get_schedulable_nodes(cluster, client=None, os_type=TEST_OS):
     nodes = client.list_node(clusterId=cluster.id).data
     schedulable_nodes = []
     for node in nodes:
-        if node.worker and (not node.unschedulable):
+        if not node.unschedulable:
+            shouldSchedule = True
+            # node.taints doesn't exist if the node has no taints. 
+            try:
+                for tval in node.taints:
+                    if str(tval).find("PreferNoSchedule") == -1:
+                        if str(tval).find("NoExecute") > -1 or str(tval).find("NoSchedule") > -1:
+                            shouldSchedule=False
+                            break
+            except AttributeError:
+                pass
+            if not shouldSchedule:
+                continue
             for key, val in node.labels.items():
                 # Either one of the labels should be present on the node
                 if key == 'kubernetes.io/os' or key == 'beta.kubernetes.io/os':
                     if val == os_type:
                         schedulable_nodes.append(node)
                         break
-        # Including master in list of nodes as master is also schedulable
-        if ('k3s' in cluster.version["gitVersion"] or 'rke2' in cluster.version["gitVersion"]) and node.controlPlane:
-            schedulable_nodes.append(node)
     return schedulable_nodes
 
 
@@ -867,8 +876,7 @@ def validate_http_response(cmd, target_name_list, client_pod=None,
     if client_pod is None and cmd.startswith("http://"):
         wait_until_active(cmd, 60)
     target_hit_list = target_name_list[:]
-    count = 5 * len(target_name_list)
-    for i in range(1, count):
+    while len(target_hit_list) != 0:
         if len(target_hit_list) == 0:
             break
         if client_pod is None:
@@ -883,6 +891,7 @@ def validate_http_response(cmd, target_name_list, client_pod=None,
                            '{0}).Content }}"'.format(cmd)
             else:
                 wget_cmd = "wget -qO- " + cmd
+            time.sleep(6)
             result = kubectl_pod_exec(client_pod, wget_cmd)
             result = result.decode()
         if result is not None:
@@ -1020,7 +1029,8 @@ def validate_dns_entry(pod, host, expected, port=TEST_IMAGE_PORT):
     dig_output = kubectl_pod_exec(pod, dig_cmd)
 
     for expected_value in expected:
-        assert expected_value in str(dig_output)
+        assert expected_value in str(dig_output), \
+            "Error the dig command returned: {0}".format(dig_output)
 
 
 def validate_dns_entry_windows(pod, host, expected):
@@ -2709,58 +2719,13 @@ def delete_resource_in_AWS_by_prefix(resource_prefix):
 
 def configure_cis_requirements(aws_nodes, profile, node_roles, client,
                                cluster):
-    i = 0
-    if profile == 'rke-cis-1.4':
-        for aws_node in aws_nodes:
-            aws_node.execute_command("sudo sysctl -w vm.overcommit_memory=1")
-            aws_node.execute_command("sudo sysctl -w kernel.panic=10")
-            aws_node.execute_command("sudo sysctl -w kernel.panic_on_oops=1")
-            if node_roles[i] == ["etcd"]:
-                aws_node.execute_command("sudo useradd etcd")
-            docker_run_cmd = \
-                get_custom_host_registration_cmd(client,
-                                                 cluster,
-                                                 node_roles[i],
-                                                 aws_node)
-            aws_node.execute_command(docker_run_cmd)
-            i += 1
-    elif profile == 'rke-cis-1.5':
-        for aws_node in aws_nodes:
-            aws_node.execute_command("sudo sysctl -w vm.overcommit_memory=1")
-            aws_node.execute_command("sudo sysctl -w kernel.panic=10")
-            aws_node.execute_command("sudo sysctl -w vm.panic_on_oom=0")
-            aws_node.execute_command("sudo sysctl -w kernel.panic_on_oops=1")
-            aws_node.execute_command("sudo sysctl -w "
-                                     "kernel.keys.root_maxbytes=25000000")
-            if node_roles[i] == ["etcd"]:
-                aws_node.execute_command("sudo groupadd -g 52034 etcd")
-                aws_node.execute_command("sudo useradd -u 52034 -g 52034 etcd")
-            docker_run_cmd = \
-                get_custom_host_registration_cmd(client,
-                                                 cluster,
-                                                 node_roles[i],
-                                                 aws_node)
-            aws_node.execute_command(docker_run_cmd)
-            i += 1
-    time.sleep(5)
+    prepare_hardened_nodes(aws_nodes, profile, node_roles, client, cluster, True)
     cluster = validate_cluster_state(client, cluster)
 
     # the workloads under System project to get active
     time.sleep(20)
-    if profile == 'rke-cis-1.5':
-        create_kubeconfig(cluster)
-        network_policy_file = DATA_SUBDIR + "/default-allow-all.yaml"
-        account_update_file = DATA_SUBDIR + "/account_update.yaml"
-        items = execute_kubectl_cmd("get namespaces -A")["items"]
-        all_ns = [item["metadata"]["name"] for item in items]
-        for ns in all_ns:
-            execute_kubectl_cmd("apply -f {0} -n {1}".
-                                format(network_policy_file, ns))
-        namespace = ["default", "kube-system"]
-        for ns in namespace:
-            execute_kubectl_cmd('patch serviceaccount default'
-                                ' -n {0} -p "$(cat {1})"'.
-                                format(ns, account_update_file))
+    create_kubeconfig(cluster)
+    prepare_hardened_cluster('rke-cis-1.5', kube_fname)
     return cluster
 
 
@@ -2978,3 +2943,76 @@ def update_and_validate_kdm(kdm_url, admin_token=ADMIN_TOKEN,
     kdm_refresh_url = rancher_api_url + "/kontainerdrivers?action=refresh"
     response = requests.post(kdm_refresh_url, verify=False, headers=header)
     assert response.ok
+
+
+def prepare_hardened_nodes(aws_nodes, profile, node_roles, 
+client=None, cluster=None, custom_cluster=False):
+    i = 0
+    conf_file = DATA_SUBDIR + "/sysctl-config"
+    if profile == 'rke-cis-1.4':
+        for aws_node in aws_nodes:
+            file1 = open(conf_file, 'r')
+            while True:
+                line = file1.readline()
+                if not line:
+                    break
+                aws_node.execute_command(line.strip())
+            if "etcd" in node_roles[i]:
+                aws_node.execute_command("sudo useradd etcd")
+            if custom_cluster:
+                docker_run_cmd = \
+                get_custom_host_registration_cmd(client,
+                                                 cluster,
+                                                 node_roles[i],
+                                                 aws_node)
+                aws_node.execute_command(docker_run_cmd)
+            i += 1
+    elif profile == 'rke-cis-1.5':
+        for aws_node in aws_nodes:            
+            file1 = open(conf_file, 'r')
+            while True:
+                line = file1.readline()
+                if not line:
+                    break
+                aws_node.execute_command(line.strip())
+            if "etcd" in node_roles[i]:
+                aws_node.execute_command("sudo groupadd -g 52034 etcd")
+                aws_node.execute_command("sudo useradd -u 52034 -g 52034 etcd")
+            if custom_cluster:
+                docker_run_cmd = \
+                get_custom_host_registration_cmd(client,
+                                                 cluster,
+                                                 node_roles[i],
+                                                 aws_node)
+                aws_node.execute_command(docker_run_cmd)
+            i += 1
+    time.sleep(5)
+    file1.close()
+    return aws_nodes
+
+
+def prepare_hardened_cluster(profile, kubeconfig_path):
+    if profile == 'rke-cis-1.5': 
+        network_policy_file = DATA_SUBDIR + "/default-allow-all.yaml"
+        account_update_file = DATA_SUBDIR + "/account_update.yaml"
+        items = execute_kubectl_cmd("get namespaces -A", 
+        kubeconfig=kubeconfig_path)["items"]
+        all_ns = [item["metadata"]["name"] for item in items]
+        for ns in all_ns:
+            execute_kubectl_cmd("apply -f {0} -n {1}".
+                                format(network_policy_file, ns), 
+                                kubeconfig=kubeconfig_path)
+            execute_kubectl_cmd('patch serviceaccount default'
+                                ' -n {0} -p "$(cat {1})"'.
+                                format(ns, account_update_file), 
+                                kubeconfig=kubeconfig_path)
+
+
+def print_kubeconfig(kpath):
+    kubeconfig_file = open(kpath, "r")
+    kubeconfig_contents = kubeconfig_file.read()
+    kubeconfig_file.close()
+    kubeconfig_contents_encoded = base64.b64encode(
+        kubeconfig_contents.encode("utf-8")).decode("utf-8")
+    print("\n\n" + kubeconfig_contents + "\n\n")
+    print("\nBase64 encoded: \n\n" + kubeconfig_contents_encoded + "\n\n")
